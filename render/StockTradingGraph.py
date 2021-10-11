@@ -1,15 +1,11 @@
-
-
 import numpy as np
-import matplotlib
+import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
+import matplotlib.dates as dates
 from matplotlib import style
-
-# finance module is no longer part of matplotlib
-# see: https://github.com/matplotlib/mpl_finance
-from mpl_finance import candlestick_ochl as candlestick
-
+from datetime import datetime
+# import mplfinance as mpf
+from mplfinance.original_flavor import candlestick_ohlc  as candlestick
 style.use('dark_background')
 
 VOLUME_CHART_HEIGHT = 0.33
@@ -21,8 +17,8 @@ DOWN_TEXT_COLOR = '#DC2C27'
 
 
 def date2num(date):
-    converter = mdates.strpdate2num('%Y-%m-%d')
-    return converter(date)
+    converter = dates.datestr2num(datetime.strptime(date,'%Y-%m-%d').strftime('%Y-%m-%d'))
+    return converter
 
 
 class StockTradingGraph:
@@ -30,6 +26,7 @@ class StockTradingGraph:
 
     def __init__(self, df, title=None):
         self.df = df
+        df['dt'] = pd.to_datetime(df['Date'])
         self.net_worths = np.zeros(len(df['Date']))
 
         # Create a figure on screen and set the title
