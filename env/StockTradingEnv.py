@@ -17,30 +17,55 @@ INITIAL_ACCOUNT_BALANCE = 10000
 
 LOOKBACK_WINDOW_SIZE = 40
 
-
 def factor_pairs(val):
     return [(i, val / i) for i in range(1, int(val**0.5)+1) if val % i == 0]
 
+# np.seterr(all='raise')
 
 class StockTradingEnv(gym.Env):
-    """A stock trading environment for OpenAI gym"""
-    metadata = {'render.modes': ['live', 'file', 'none']}
-    visualization = None
+    """stock trading gym environment
 
-    def __init__(self, df):
-        super(StockTradingEnv, self).__init__()
-
+    """
+    metadata = {'render.modes':['live','human','file','none']}
+    
+    def __init__(self, df) -> None:
+        super(StockTradingEnv,self).__init__()
+        
         self.df = self._adjust_prices(df)
-        self.reward_range = (0, MAX_ACCOUNT_BALANCE)
-
-        # Actions of the format Buy x%, Sell x%, Hold, etc.
-        self.action_space = spaces.Box(
-            low=np.array([0, 0]), high=np.array([3, 1]), dtype=np.float16)
-
-        # Prices contains the OHCL values for the last five prices
-        self.observation_space = spaces.Box(
-            low=0, high=1, shape=(5, LOOKBACK_WINDOW_SIZE + 2), dtype=np.float16)
-
+        self.visualization = None
+        
+        """
+        Reward, we want to incentivize profit that is sustained over long periods of time. 
+        At each step, we will set the reward to the account balance multiplied by 
+        some fraction of the number of time steps so far.
+        The purpose of this is to delay rewarding the agent too fast in the early stages 
+        and allow it to explore sufficiently before optimizing a single strategy too deeply. 
+        It will also reward agents that maintain a higher balance for longer, 
+        rather than those who rapidly gain money using unsustainable strategies.
+        """
+        self.reward_range = (0, MAX_ACCOUNT_BALANCE) 
+    
+        """
+        Action space that has a discrete number of action types (buy, sell, and hold), 
+        as well as a continuous spectrum of amounts to buy/sell 
+        (0-100% of the account balance/position size respectively).
+        You’ll notice the amount is not necessary for the hold action, 
+        but will be provided anyway. Our agent does not initially know this, 
+        but over time should learn that the amount is extraneous for this action.
+        """
+        self.action_space = spaces.Box(low=np.array([0,0]), high=np.array([3,1]),dtype=np.float16)
+        
+        """
+        Observation_space contains all of the input variables we want our agent to consider before making, 
+        or not making a trade. We want our agent to “see” the forex data points 
+        (open price, high, low, close, and daily volume) for the last five days, 
+        as well a couple other data points like its account balance, current stock positions, and current profit.
+        The intuition here is that for each time step, we want our agent to consider the price action 
+        leading up to the current price, as well as their own portfolio’s status in order to make 
+        an informed decision for the next action.
+        """
+        self.observation_space = spaces.Box(low=0, high=1, shape=(5, LOOKBACK_WINDOW_SIZE + 2), dtype=np.float16)    
+    
     def _adjust_prices(self, df):
         adjust_ratio = df['Adjusted_Close'] / df['Close']
 
@@ -50,7 +75,7 @@ class StockTradingEnv(gym.Env):
         df['Close'] = df['Close'] * adjust_ratio
 
         return df
-
+    
     def _next_observation(self):
         frame = np.zeros((5, LOOKBACK_WINDOW_SIZE + 1))
 
@@ -80,6 +105,7 @@ class StockTradingEnv(gym.Env):
         return obs
 
     def _take_action(self, action):
+        # Set the current price to a random price within the time step
         current_price = random.uniform(
             self.df.loc[self.current_step, "Open"], self.df.loc[self.current_step, "Close"])
 
@@ -94,15 +120,18 @@ class StockTradingEnv(gym.Env):
             additional_cost = shares_bought * current_price
 
             self.balance -= additional_cost
-            self.cost_basis = (
-                prev_cost + additional_cost) / (self.shares_held + shares_bought)
+            if (self.shares_held + shares_bought) != 0 :            
+                self.cost_basis = (prev_cost + additional_cost) / (self.shares_held + shares_bought)
+            else:
+                self.cost_basis = 0
+                
             self.shares_held += shares_bought
 
             if shares_bought > 0:
                 self.trades.append({'step': self.current_step,
                                     'shares': shares_bought, 'total': additional_cost,
                                     'type': "buy"})
-
+          
         elif action_type < 2:
             # Sell amount % of shares held
             shares_sold = int(self.shares_held * amount)
@@ -110,12 +139,11 @@ class StockTradingEnv(gym.Env):
             self.shares_held -= shares_sold
             self.total_shares_sold += shares_sold
             self.total_sales_value += shares_sold * current_price
-
             if shares_sold > 0:
                 self.trades.append({'step': self.current_step,
                                     'shares': shares_sold, 'total': shares_sold * current_price,
                                     'type': "sell"})
-
+          
         self.net_worth = self.balance + self.shares_held * current_price
 
         if self.net_worth > self.max_net_worth:
@@ -123,6 +151,24 @@ class StockTradingEnv(gym.Env):
 
         if self.shares_held == 0:
             self.cost_basis = 0
+
+    def step(self, action):
+        # Execute one time step within the environment
+        self._take_action(action)
+
+        self.current_step += 1
+
+        if self.current_step > len(self.df.loc[:, 'Open'].values) - 6:
+            self.current_step = 0
+
+        delay_modifier = (self.current_step / MAX_STEPS)
+
+        reward = self.balance * delay_modifier
+        done = self.net_worth <= 0
+
+        obs = self._next_observation()
+
+        return obs, reward, done, {}
 
     def step(self, action):
         # Execute one time step within the environment
@@ -151,7 +197,7 @@ class StockTradingEnv(gym.Env):
         self.total_sales_value = 0
         self.current_step = 0
         self.trades = []
-
+        self.visualization = None
         return self._next_observation()
 
     def _render_to_file(self, filename='render.txt'):
@@ -171,21 +217,31 @@ class StockTradingEnv(gym.Env):
 
         file.close()
 
-    def render(self, mode='live', **kwargs):
+    def render(self, mode='live', title=None, **kwargs):
         # Render the environment to the screen
+        if mode == 'human':
+            profit = self.net_worth - INITIAL_ACCOUNT_BALANCE
+
+            print(f'Step: {self.current_step}')
+            print(f'Balance: {self.balance}')
+            print(
+                f'Shares held: {self.shares_held} (Total sold: {self.total_shares_sold})')
+            print(
+                f'Avg cost for held shares: {self.cost_basis} (Total sales value: {self.total_sales_value})')
+            print(
+                f'Net worth: {self.net_worth} (Max net worth: {self.max_net_worth})')
+            print(f'Profit: {profit}')
         if mode == 'file':
             self._render_to_file(kwargs.get('filename', 'render.txt'))
-
         elif mode == 'live':
             if self.visualization == None:
-                self.visualization = StockTradingGraph(
-                    self.df, kwargs.get('title', None))
-
-            if self.current_step > LOOKBACK_WINDOW_SIZE:
-                self.visualization.render(
-                    self.current_step, self.net_worth, self.trades, window_size=LOOKBACK_WINDOW_SIZE)
-
+                self.visualization = StockTradingGraph(self.df, title)
+    
+            if self.current_step > LOOKBACK_WINDOW_SIZE:        
+                self.visualization.render(self.current_step, self.net_worth, 
+                self.trades, window_size=LOOKBACK_WINDOW_SIZE)
+              
     def close(self):
         if self.visualization != None:
             self.visualization.close()
-            self.visualization = None
+            self.visualization = None      

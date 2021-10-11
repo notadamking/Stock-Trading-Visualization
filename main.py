@@ -1,8 +1,6 @@
-import gym
-
-from stable_baselines.common.policies import MlpPolicy
-from stable_baselines.common.vec_env import DummyVecEnv
-from stable_baselines import PPO2
+from stable_baselines3.ppo import MlpPolicy
+from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3 import PPO
 
 from env.StockTradingEnv import StockTradingEnv
 
@@ -14,11 +12,12 @@ df = df.sort_values('Date')
 # The algorithms require a vectorized environment to run
 env = DummyVecEnv([lambda: StockTradingEnv(df)])
 
-model = PPO2(MlpPolicy, env, verbose=1)
+model = PPO(MlpPolicy, env, verbose=1)
 model.learn(total_timesteps=50)
 
 obs = env.reset()
+
 for i in range(len(df['Date'])):
     action, _states = model.predict(obs)
     obs, rewards, done, info = env.step(action)
-    env.render(title="MSFT")
+    env.render(mode='live')
